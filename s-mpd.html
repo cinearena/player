@@ -472,18 +472,68 @@
         .page-loader.hidden {
             display: none;
         }
+        
+        /* Iframe fallback styles */
+        .iframe-container {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            display: none;
+        }
+        
+        .iframe-container iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+            border-radius: 12px;
+        }
+        
+        .player-type-selector {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 9999;
+            background: rgba(0,0,0,0.7);
+            padding: 5px;
+            border-radius: 5px;
+            display: flex;
+            gap: 5px;
+        }
+        
+        .player-type-btn {
+            background: #ff0000;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        
+        .player-type-btn.active {
+            background: #cc0000;
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
 
 <div class="shaka-video-container youtube-theme" data-shaka-player>
-    <video autoplay muted playsinline preload="auto" poster=""></video>
+    <video playsinline preload="auto" poster=""></video>
     <a href="https://t.me/cine_arena" target="_blank">
         <img id="myLogo" src="https://cricstream4u.github.io/cinearena/cineheader.png">
     </a>
     <div class="manual-play-button" id="manualPlayButton">
         ▶ Click to Play
     </div>
+</div>
+
+<div class="iframe-container" id="iframeContainer"></div>
+
+<div class="player-type-selector" id="playerTypeSelector">
+    <button class="player-type-btn" data-type="shaka">Shaka</button>
+    <button class="player-type-btn" data-type="iframe">Iframe</button>
 </div>
 
 <div id="pageLoader" class="page-loader">Loading Player...</div>
@@ -533,17 +583,16 @@
         const p = err.querySelector('p');
         if (p) p.textContent = message;
         document.querySelector('.shaka-video-container').style.display = 'none';
+        document.querySelector('#iframeContainer').style.display = 'none';
     }
 
     function hideError() {
         const err = document.getElementById('errorMessage');
         err.style.display = 'none';
-        document.querySelector('.shaka-video-container').style.display = 'block';
     }
 
     function showMainContent() {
         document.getElementById('pageLoader').classList.add('hidden');
-        document.querySelector('.shaka-video-container').style.display = 'block';
     }
 
     // Main player initialization
@@ -551,22 +600,80 @@
     const name = queryParams.get('url');
     const keyId = queryParams.get('keyId');
     const key = queryParams.get('key');
+    
+    // Global variables
+    let player = null;
+    let ui = null;
+    let currentPlayerType = 'shaka';
+    let streamUrl = '';
+    let cookieHeader = '';
 
-    document.addEventListener('DOMContentLoaded', async () => {
-        shaka.polyfill.installAll();
+    // Iframe player function
+    function initIframePlayer() {
+        // Hide Shaka player
+        document.querySelector('.shaka-video-container').style.display = 'none';
+        
+        // Show iframe container
+        const iframeContainer = document.getElementById('iframeContainer');
+        iframeContainer.style.display = 'block';
+        
+        // Clear existing iframe
+        iframeContainer.innerHTML = '';
+        
+        // Create iframe with autoplay enabled
+        const iframe = document.createElement('iframe');
+        iframe.src = streamUrl + '?autoplay=1&mute=1&playsinline=1';
+        iframe.setAttribute('allow', 'autoplay; encrypted-media; fullscreen; picture-in-picture');
+        iframe.setAttribute('allowfullscreen', 'true');
+        iframe.setAttribute('frameborder', '0');
+        iframe.style.width = '100%';
+        iframe.style.height = '100%';
+        iframe.style.border = 'none';
+        
+        iframeContainer.appendChild(iframe);
+        
+        // Try to force autoplay in iframe
+        setTimeout(() => {
+            if (iframe.contentWindow) {
+                try {
+                    iframe.contentWindow.postMessage('play', '*');
+                } catch (e) {
+                    console.log('Could not send play message to iframe');
+                }
+            }
+        }, 1000);
+    }
 
+    // Shaka player function
+    async function initShakaPlayer() {
+        // Hide iframe
+        document.getElementById('iframeContainer').style.display = 'none';
+        
+        // Show Shaka container
+        const container = document.querySelector('.shaka-video-container');
+        container.style.display = 'block';
+        
+        // Clean up previous player
+        if (player) {
+            try {
+                player.destroy();
+            } catch (e) {
+                console.log('Error destroying previous player:', e);
+            }
+        }
+        
+        // Check if Shaka is supported
         if (!shaka.Player.isBrowserSupported()) {
-            showError('Browser not supported. Please use a modern browser.');
-            showMainContent();
+            showError('Browser not supported. Switching to iframe...');
+            initIframePlayer();
             return;
         }
 
         const video = document.querySelector('video');
-        const player = new shaka.Player();
+        player = new shaka.Player();
         await player.attach(video);
 
-        const container = document.querySelector('.shaka-video-container');
-        const ui = new shaka.ui.Overlay(player, container, video);
+        ui = new shaka.ui.Overlay(player, container, video);
 
         // Enhanced UI configuration
         const uiConfig = {
@@ -594,41 +701,11 @@
         };
         ui.configure(uiConfig);
 
-        let drmConfig = {
+        let drmConfig = keyId && key ? {
             clearKeys: {
                 [keyId]: key
             }
-        };
-
-        let streamUrl = '';
-        let cookieHeader = '';
-
-        try {
-            const response = await fetch('https://raw.githubusercontent.com/alex8875/m3u/refs/heads/main/jstar.m3u');
-            const m3uText = await response.text();
-            const lines = m3uText.split('\n');
-
-            for (let i = 0; i < lines.length; i++) {
-                const clearKeyLine = lines[i + 1];
-                const clearKeyMatch = clearKeyLine?.match(/license_key=([^:]+):([a-f0-9]+)/);
-                
-                const cookieLine = lines.find(line => line.startsWith('#EXTHTTP:'));
-                const cookieMatch = cookieLine?.match(/"cookie":"([^"]+)"/);
-
-                if (cookieMatch) {
-                    cookieHeader = cookieMatch[1];
-                }
-
-                const urlLine = name;
-                if (urlLine) {
-                    streamUrl = urlLine;
-                    break;
-                }
-            }
-        } catch (error) {
-            console.error('Failed to fetch M3U:', error);
-            showError('Failed to load stream data. Please check your connection.');
-        }
+        } : {};
 
         // Configure player with enhanced settings
         player.configure({
@@ -675,12 +752,6 @@
         });
 
         // Handle autoplay with improved user interaction detection
-        const enableAutoplay = () => {
-            video.setAttribute('autoplay', '');
-            video.setAttribute('playsinline', '');
-            video.autoplay = true;
-        };
-
         const attemptAutoplay = async () => {
             try {
                 video.muted = false;
@@ -717,13 +788,16 @@
         // Error handling
         player.addEventListener('error', (event) => {
             console.error('Shaka Player Error:', event.detail);
-            showError('Player error occurred. Trying to recover...');
             
-            // Try to recover
-            setTimeout(() => {
-                player.retryStreaming();
-                hideError();
-            }, 2000);
+            // If Shaka fails, try iframe as fallback
+            if (currentPlayerType === 'shaka') {
+                console.log('Shaka failed, switching to iframe...');
+                document.querySelectorAll('.player-type-btn').forEach(btn => {
+                    if (btn.dataset.type === 'iframe') {
+                        btn.click();
+                    }
+                });
+            }
         });
 
         // Fullscreen handling
@@ -759,10 +833,8 @@
                 throw new Error('No stream URL found');
             }
 
-            enableAutoplay();
             await player.load(streamUrl);
             
-            showMainContent();
             hideError();
             
             if (video.readyState >= 3) {
@@ -777,25 +849,118 @@
             }
         } catch (error) {
             console.error('Load error:', error);
-            showError(`Failed to load stream: ${error.message}`);
-            showMainContent();
+            showError(`Shaka failed: ${error.message}. Switching to iframe...`);
+            // Fallback to iframe
+            initIframePlayer();
         }
+    }
 
+    // Switch player type
+    function switchPlayerType(type) {
+        currentPlayerType = type;
+        
+        // Update button states
+        document.querySelectorAll('.player-type-btn').forEach(btn => {
+            if (btn.dataset.type === type) {
+                btn.classList.add('active');
+            } else {
+                btn.classList.remove('active');
+            }
+        });
+        
+        // Switch player
+        if (type === 'shaka') {
+            initShakaPlayer();
+        } else if (type === 'iframe') {
+            initIframePlayer();
+        }
+    }
+
+    // Main initialization
+    document.addEventListener('DOMContentLoaded', async () => {
+        // Hide autoplay attributes for iframe compatibility
+        const video = document.querySelector('video');
+        video.removeAttribute('autoplay');
+        video.muted = true;
+        
+        try {
+            const response = await fetch('https://raw.githubusercontent.com/alex8875/m3u/refs/heads/main/jstar.m3u');
+            const m3uText = await response.text();
+            const lines = m3uText.split('\n');
+
+            for (let i = 0; i < lines.length; i++) {
+                const cookieLine = lines.find(line => line.startsWith('#EXTHTTP:'));
+                const cookieMatch = cookieLine?.match(/"cookie":"([^"]+)"/);
+
+                if (cookieMatch) {
+                    cookieHeader = cookieMatch[1];
+                }
+
+                const urlLine = name;
+                if (urlLine) {
+                    streamUrl = urlLine;
+                    break;
+                }
+            }
+        } catch (error) {
+            console.error('Failed to fetch M3U:', error);
+            // If M3U fetch fails, use direct URL
+            if (name) {
+                streamUrl = name;
+            }
+        }
+        
+        // If no stream URL found, show error
+        if (!streamUrl) {
+            showError('No stream URL provided. Please add ?url= parameter.');
+            showMainContent();
+            return;
+        }
+        
+        // Setup player type selector
+        document.querySelectorAll('.player-type-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                switchPlayerType(btn.dataset.type);
+            });
+        });
+        
+        // Try Shaka first
+        try {
+            await initShakaPlayer();
+        } catch (error) {
+            console.error('Shaka initialization failed:', error);
+            // Fallback to iframe
+            switchPlayerType('iframe');
+        }
+        
+        showMainContent();
+        
         // Handle page visibility changes
         document.addEventListener('visibilitychange', () => {
-            if (!document.hidden && video.paused) {
-                attemptAutoplay();
+            if (!document.hidden && currentPlayerType === 'shaka') {
+                const video = document.querySelector('video');
+                if (video && video.paused) {
+                    video.play().catch(e => console.log('Resume play failed:', e));
+                }
             }
         });
 
         // Cleanup on page unload
         window.addEventListener('beforeunload', () => {
             try {
-                player.destroy();
+                if (player) {
+                    player.destroy();
+                }
             } catch (e) {
                 console.error('Cleanup error:', e);
             }
         });
+    });
+    
+    // Listen for messages from iframe (for cross-origin communication)
+    window.addEventListener('message', (event) => {
+        // Handle messages from iframe if needed
+        console.log('Message from iframe:', event.data);
     });
 </script>
 </body>
